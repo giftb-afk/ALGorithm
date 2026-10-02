@@ -17,4 +17,4 @@ Features for the project:
     IsSynthetic (1 = Kaggle 0=Original_data )
 
 
-
+olde_age = 40 (suggestion Leo, because there the exit rate jumps from 6% of over 30% )
