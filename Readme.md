@@ -18,3 +18,9 @@ Features for the project:
 
 
 olde_age = 40 (suggestion Leo, because there the exit rate jumps from 6% of over 30% )
+
+
+
+I left the Churn_Modelling.csv out of my code for now to compare the models more easily, but it might improve the results, so I would suggest that we try it with the original data as well.
+
+At the moment I have only built simple versions of HistGB (no tuning so far) and LogReg (which is already well calibrated from the start). I will start testing now and see where I end up.
