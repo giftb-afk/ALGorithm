@@ -14,7 +14,7 @@ Features for the project:
     ManyProducts (1 = 3-4 Products)
     ZeroBalance
     AgeXInactive (1 = old and inactive) 
-    IsSynthetic ( 1 = Kaggle data, 0 = Original_data) 
+    IsSynthetic (1 = Kaggle 0=Original_data )
 
 
 
