@@ -1,0 +1,199 @@
+DOCUMENTATION HistGB (HistGradientBoostingClassifier)
+=====================================================
+
+File: testing_HistGB.py
+Metric: log loss (lower is better)
+Validation: 5-fold CV, KFold(shuffle=True, random_state=10), same splits as the RF models
+Submission: probabilities rounded to 4 decimals, limited to 0.0001 - 0.9999
+
+
+SETUP
+-----
+Data cleaning: missing numerical values -> mean, missing categorical values -> most frequent value
+               (SimpleImputer, fitted on train, applied to test)
+
+Features (16):
+    Age, NumOfProducts, IsActiveMember, France, Germany, Spain, Gender_binary,
+    Balance, CreditScore, Tenure, HasCrCard, EstimatedSalary,
+    OneProduct, ManyProducts, ZeroBalance, AgeXInactive
+
+    AgeXInactive = 1 if Age >= 40 and IsActiveMember = 0
+    IsSynthetic is not used (Churn_Modelling.csv is left out for now, so it would always be 1)
+
+
+1) BASELINE (untuned)
+---------------------
+Parameters: learning_rate=0.05, max_iter=300, rest default (max_leaf_nodes=31, min_samples_leaf=20)
+
+CV log loss per fold: 0.3624, 0.3181, 0.3937, 0.3781, 0.3779
+CV average log loss:  0.366
+Kaggle public score:  0.34841
+
+-> Worse than LogReg (CV 0.3405, Kaggle 0.31624) and the RF models.
+
+
+2) Testing (AgeXInactive version)
+-----------------------------
+Repeated CV (5 folds x 3 repeats), average log loss:
+
+    binary, Age >= 40 (used)        0.3645
+    binary, Age >= 45               0.3645
+    binary, Age >= 35               0.3654
+    without the feature             0.3648
+    continuous Age * inactive       0.3671
+
+-> Almost no difference for HistGB (trees find the Age/IsActiveMember interaction themselves).
+   Kept the binary version with 40, because it is also the best for LogReg.
+-> !Overfitting!
+-------------------------
+Train vs. validation log loss on the same folds:
+
+    Setting                                           Train    Validation
+    baseline (300 trees)                              0.108    0.366
+    100 trees                                         0.217    0.338
+    early stopping                                    0.228    0.338
+    300 trees, max_leaf_nodes=8                       0.252    0.335
+    150 trees, max_leaf_nodes=8, min_samples_leaf=50  0.290    0.331
+
+
+   With only 5000 rows, 300 trees with 31 leaves each learn noise.
+->Idea: make the model simpler, one parameter at a time:
+       Step 1: max_iter          (number of trees)
+       Step 2: max_leaf_nodes    (size of each tree)
+       Step 3: min_samples_leaf  (minimum customers per leaf)
+       Step 4: learning_rate together with max_iter
+
+
+3) Testing for tuning  
+    1: max_iter (number of trees)
+--------------------------------------------
+learning_rate=0.05, rest default, 5-fold CV:
+
+    max_iter    50      75      100     125     150     200     300
+    log loss    0.3405  0.3370  0.3384  0.3411  0.3440  0.3506  0.3660
+
+-> Best: max_iter = 75, CV log loss 0.337 (before: 0.366)
+   Up to ~75 trees the model learns real patterns, after that mostly noise.
+   75 and 100 are very close (difference 0.0014), both are fine.
+   Code: make_model(n_trees), loop over tree_values, best value is picked automatically
+         and used for the final model / submission.
+   
+
+
+  2.Test 
+    : max_leaf_nodes (size of each tree) together with max_iter (1)
+---------------------------------------------------------------------------
+Tested together, because smaller trees learn less per tree and need more trees.
+learning_rate=0.05, rest default, 5-fold CV, average log loss:
+
+    max_leaf_nodes \ max_iter   50      75      100     150     200     300
+    4                           0.3615  0.3463  0.3385  0.3324  0.3305  0.3302
+    8                           0.3444  0.3344  0.3314  0.3305  0.3314  0.3345
+    16                          0.3399  0.3339  0.3335  0.3343  0.3370  0.3454
+    31 (default)                0.3405  0.3370  0.3384  0.3440  0.3506  0.3660
+
+-> Best: max_leaf_nodes = 4, max_iter = 300, CV log loss 0.3302 (before: 0.337)
+   Extra check, because 300 was the largest value tested (4 leaves):
+       max_iter    300     400     500     700
+       log loss    0.3302  0.3304  0.3316  0.3350
+   -> 300 is really the optimum, not just the edge of the grid.
+
+   Why: 
+   Why not many small trees instead of a few big ones. 
+    -> Each tree with 4 leaves can only learn simple patterns, so the model learns more slowly and picks up less noise.
+    -> 8 leaves with 150 trees (0.3305) is almost as good.
+   
+    -> The smaller the trees, the more trees are needed before overfitting starts
+       (best max_iter: 31 leaves -> 75, 16 -> 100, 8 -> 150, 4 -> 300).
+   changes in Code: make_model(n_trees, n_leaves), double loop over leaf_values and tree_values,
+        -> best combination is picked automatically and used for the final model / submission.
+   Kaggle public score: 0.30971 (before: 0.34841)
+   -> Best team score so far (LogReg 0.31624, best RF 0.32118).
+      
+
+ 3. Test 
+   remaining parameters (1. and 2. Tuning combined) and mixing of models 
+-------------------------------------------------------------
+Starting point: learning_rate=0.05, max_iter=300, max_leaf_nodes=4 -> CV 0.3302
+Each change tested alone, 5-fold CV:
+
+    min_samples_leaf    5: 0.3298   50: 0.3297   100: 0.3556   200: 0.3552   (default 20)
+    l2_regularization   0.1: 0.3298   1: 0.3300   5: 0.3297                  (default 0)
+    learning_rate       0.025 / 600 trees: 0.3301
+                        0.1   / 150 trees: 0.3303
+                        0.02  / 750 trees: 0.3299
+
+    Mix (average of CV predictions):
+        HistGB only           0.3302
+        0.8 HistGB + 0.2 LogReg   0.3297
+        0.7 HistGB + 0.3 LogReg   0.3299
+        0.5 HistGB + 0.5 LogReg   0.3313
+        LogReg only           0.3405
+
+-> All improvements are at most 0.0005 = noise. Parameter tuning of HistGB is done (i don`t have more ideas at the moment, maybe tomorrow).
+   min_samples_leaf >= 100 is much worse: only 104 customers have ManyProducts (89% exit),
+   with at least 100 customers per leaf the trees can't isolate this small group anymore.
+   Not changed in the code (no real improvement).
+
+
+4) Data testing 
+ -> have not tried the freature Issynthetic yet 
+
+ => combination of Kaggle data and Churn_Modelling.csv
+
+    Code change in testing_HistGB.py:
+    - Churn_Modelling.csv is only used if the file is in the folder, otherwise the script runs like before
+    - Cleaned with the same imputer values as the Kaggle data (fitted on train.csv)
+    - Same features, plus IsSynthetic (1 = Kaggle, 0 = original)
+    - Original data is ONLY added to the training part of each fold,
+      validation stays Kaggle data only -> CV score stays comparable to before (0.3302)
+    - Final model is trained on Kaggle train + original data
+
+    Checked: without the file the result is the same as before (CV 0.3302).
+             With a test file in the right format the script runs without errors.
+    Also check if external data is allowed in the competition rules.
+
+    Churn_Modelling.csv: 10000 rows, no missing values, exit rate 20.4% (Kaggle train: 21.8%)
+
+    Result (grid from step 2, 5-fold CV, validation on Kaggle rows only):
+
+        max_leaf_nodes \ max_iter   50      75      100     150     200     300
+        4                           0.3704  0.3552  0.3454  0.3366  0.3327  0.3290
+        8                           0.3501  0.3370  0.3312  0.3269  0.3259  0.3258
+        16                          0.3407  0.3318  0.3288  0.3281  0.3281  0.3281
+        31                          0.3388  0.3325  0.3311  0.3313  0.3313  0.3313
+
+    -> Best: max_leaf_nodes = 8, max_iter = 300, CV log loss 0.3258 (without original data: 0.3302)
+       With more data, slightly bigger trees (8 instead of 4 leaves) are best now.
+
+    Note: with more than 10000 training rows HistGB turns on early stopping automatically
+    (early_stopping='auto'). That is why the values for 16 and 31 leaves stop changing after ~150 trees.
+
+    Robustness check (5 different KFold seeds = 25 folds, same splits for all settings):
+        without original data, 4 leaves / 300 trees          0.3311
+        with original data, 8 leaves / 300, early stop off   0.3251
+        with original data, 8 leaves / 150, early stop off   0.3266
+        with original data, 16 leaves / 150, early stop off  0.3274
+        with original data, 4 leaves / 300, early stop off   0.3289
+        with original data, 8 leaves / 300, early stop auto  0.3262
+
+    -> The original data really helps: about -0.005 to -0.006 log loss, stable over all seeds.
+       Turning early stopping off is slightly better (0.3251 vs 0.3262), because early stopping
+       takes 10% of the training data away for its own validation.
+
+    Code change: early_stopping=False in make_model, grid run again (5-fold CV, seed 10):
+
+        max_leaf_nodes \ max_iter   50      75      100     150     200     300
+        4                           0.3698  0.3541  0.3450  0.3360  0.3321  0.3283
+        8                           0.3493  0.3364  0.3307  0.3266  0.3252  0.3252
+        16                          0.3404  0.3312  0.3289  0.3281  0.3285  0.3294
+        31                          0.3371  0.3313  0.3305  0.3308  0.3316  0.3351
+
+    -> Best: max_leaf_nodes = 8, max_iter = 300, CV log loss 0.3252
+       (without original data: 0.3302, with original data + early stopping: 0.3258)
+       Now the overfitting with too many trees is visible again for 16 and 31 leaves.
+       New submission_HistGB.csv is written with this model.
+       Kaggle public score: not submitted yet (previous best: 0.30971)
+
+
+

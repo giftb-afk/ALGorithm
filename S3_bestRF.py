@@ -4,7 +4,11 @@ import numpy as np
 from sklearn.impute import SimpleImputer
 
 trainset = pd.read_csv("bank_train.csv")
-testset = pd.read_csv("bank_test.csv")
+testset = pd.read_csv("bank_test.csv") 
+
+#trainset = pd.read_csv("train.csv")
+#testset = pd.read_csv("test.csv")
+
 numerical_columns = [
     "CreditScore",
     "Age",

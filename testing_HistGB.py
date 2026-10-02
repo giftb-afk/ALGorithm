@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 import numpy as np
 
@@ -10,6 +12,17 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 # DATA IMPORT
 trainset = pd.read_csv("train.csv")
 testset = pd.read_csv("test.csv")
+
+# Original bank churn data, only used if the file is in the folder
+original_path = "Churn_Modelling.csv"
+use_original = os.path.exists(original_path)
+
+if use_original:
+    original = pd.read_csv(original_path)
+    original = original.rename(columns={"CustomerId": "CustomerID"})
+    print("Using original data:", original.shape[0], "extra rows\n")
+else:
+    print("Churn_Modelling.csv not found, only Kaggle data is used\n")
 
 
 # DATA CLEANING
@@ -37,14 +50,29 @@ mode_imputer = SimpleImputer(strategy="most_frequent")
 trainset[categorical_columns] = mode_imputer.fit_transform(trainset[categorical_columns])
 testset[categorical_columns] = mode_imputer.transform(testset[categorical_columns])
 
-for col in ["HasCrCard", "IsActiveMember"]:
-    trainset[col] = trainset[col].astype(float)
-    testset[col] = testset[col].astype(float)
+datasets = [trainset, testset]
+
+# Original data is cleaned with the same values as the Kaggle data
+if use_original:
+    original[numerical_columns] = mean_imputer.transform(original[numerical_columns])
+    original[categorical_columns] = mode_imputer.transform(original[categorical_columns])
+    datasets.append(original)
+
+for df in datasets:
+    df["HasCrCard"] = df["HasCrCard"].astype(float)
+    df["IsActiveMember"] = df["IsActiveMember"].astype(float)
+
+# IsSynthetic: 1 = Kaggle data, 0 = original data
+trainset["IsSynthetic"] = 1
+testset["IsSynthetic"] = 1
+
+if use_original:
+    original["IsSynthetic"] = 0
 
 
 old_age = 40
 
-for df in [trainset, testset]:
+for df in datasets:
 
     # Make gender binary
     df["Gender_binary"] = df["Gender"].map({"Male": 0, "Female": 1})
@@ -76,19 +104,27 @@ features = [
     "OneProduct",
     "ManyProducts",
     "ZeroBalance",
-    "AgeXInactive"
+    "AgeXInactive",
+    "IsSynthetic"
 ]
 
 y = trainset["Exited"]
 X = trainset[features]
 X_test = testset[features]
 
+if use_original:
+    X_original = original[features]
+    y_original = original["Exited"]
+
 
 # MODEL
-def make_model():
+def make_model(n_trees, n_leaves):
     return HistGradientBoostingClassifier(
         learning_rate=0.05,
-        max_iter=300,
+        max_iter=n_trees,
+        max_leaf_nodes=n_leaves,
+        # Off, otherwise it turns on automatically with more than 10000 rows (Kaggle + original data)
+        early_stopping=False,
         random_state=10)
 
 
@@ -100,32 +136,55 @@ kf = KFold(
     shuffle=True,
     random_state=10)
 
-scores = []
+# TUNING STEP 2: size of each tree (max_leaf_nodes) together with number of trees (max_iter)
+# Smaller trees learn less per tree, so they usually need more trees
+leaf_values = [4, 8, 16, 31]
+tree_values = [50, 75, 100, 150, 200, 300]
 
-for train_indices, validate_indices in kf.split(X):
-    X_train = X.iloc[train_indices, :]
-    X_validate = X.iloc[validate_indices, :]
+results = {}
 
-    y_train = y.iloc[train_indices]
-    y_validate = y.iloc[validate_indices]
+for n_leaves in leaf_values:
+    for n_trees in tree_values:
+        scores = []
 
-    model = make_model()
-    model.fit(X_train, y_train)
+        for train_indices, validate_indices in kf.split(X):
+            X_train = X.iloc[train_indices, :]
+            X_validate = X.iloc[validate_indices, :]
 
-    probabilities = model.predict_proba(X_validate)[:, 1]
+            y_train = y.iloc[train_indices]
+            y_validate = y.iloc[validate_indices]
 
-    score = log_loss(y_validate, probabilities)
+            # Original data is only added to training, validation stays Kaggle data only
+            if use_original:
+                X_train = pd.concat([X_train, X_original])
+                y_train = pd.concat([y_train, y_original])
 
-    scores.append(score)
+            model = make_model(n_trees, n_leaves)
+            model.fit(X_train, y_train)
 
-print("HistGB")
-print("Log loss per fold:", np.round(scores, 4))
-print("Average log loss:", round(np.mean(scores), 4), "\n")
+            probabilities = model.predict_proba(X_validate)[:, 1]
+
+            score = log_loss(y_validate, probabilities)
+
+            scores.append(score)
+
+        results[(n_trees, n_leaves)] = np.mean(scores)
+
+        print("max_leaf_nodes =", n_leaves, " max_iter =", n_trees, " Average log loss:", round(np.mean(scores), 4))
+
+best_n_trees, best_n_leaves = min(results, key=results.get)
+
+print("\nBest max_leaf_nodes:", best_n_leaves, " Best max_iter:", best_n_trees,
+      " Average log loss:", round(results[(best_n_trees, best_n_leaves)], 4), "\n")
 
 
 # FINAL MODEL SUBMISSION
-final_model = make_model()
-final_model.fit(X, y)
+final_model = make_model(best_n_trees, best_n_leaves)
+
+if use_original:
+    final_model.fit(pd.concat([X, X_original]), pd.concat([y, y_original]))
+else:
+    final_model.fit(X, y)
 
 test_probabilities = final_model.predict_proba(X_test)[:, 1]
 
