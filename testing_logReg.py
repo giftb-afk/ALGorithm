@@ -144,7 +144,7 @@ submission = pd.DataFrame({
     "Exited": test_probabilities})
 submission.to_csv("submission_LogReg.csv", index=False)
 
-print(submission.shape)
+#print(submission.shape)
 print(submission.head(), "\n")
 
 # Logistic regression coefficients (on scaled features)
