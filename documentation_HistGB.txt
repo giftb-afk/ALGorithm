@@ -193,7 +193,10 @@ Each change tested alone, 5-fold CV:
        (without original data: 0.3302, with original data + early stopping: 0.3258)
        Now the overfitting with too many trees is visible again for 16 and 31 leaves.
        New submission_HistGB.csv is written with this model.
-       Kaggle public score: not submitted yet (previous best: 0.30971)
-
+       Kaggle public score: 0.29492 (before: 0.30971)
+       -> New best team score. Kaggle improved more than CV (Kaggle -0.0148, CV -0.0050).
+          Part of that is probably noise of the public leaderboard (only a part of the test data),
+          so the real improvement is more likely around the CV value.
+          
 
 
