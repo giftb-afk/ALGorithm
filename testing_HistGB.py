@@ -105,8 +105,7 @@ features = [
     "ManyProducts",
     "ZeroBalance",
     "AgeXInactive",
-    "IsSynthetic"
-]
+    "IsSynthetic"]
 
 y = trainset["Exited"]
 X = trainset[features]
@@ -118,7 +117,7 @@ if use_original:
 
 
 # MODEL
-def make_model(n_trees, n_leaves):
+def create_model(n_trees, n_leaves):
     return HistGradientBoostingClassifier(
         learning_rate=0.05,
         max_iter=n_trees,
@@ -159,7 +158,7 @@ for n_leaves in leaf_values:
                 X_train = pd.concat([X_train, X_original])
                 y_train = pd.concat([y_train, y_original])
 
-            model = make_model(n_trees, n_leaves)
+            model = create_model(n_trees, n_leaves)
             model.fit(X_train, y_train)
 
             probabilities = model.predict_proba(X_validate)[:, 1]
@@ -179,8 +178,10 @@ print("\nBest max_leaf_nodes:", best_n_leaves, " Best max_iter:", best_n_trees,
 
 
 # FINAL MODEL SUBMISSION
-final_model = make_model(best_n_trees, best_n_leaves)
+final_model = create_model(best_n_trees, best_n_leaves)
 
+# In case we don`t have the Churn_Modelling.csv file, we only use the Kaggle data for training`
+#But we should have them to use according to the instructions 
 if use_original:
     final_model.fit(pd.concat([X, X_original]), pd.concat([y, y_original]))
 else:
@@ -200,5 +201,5 @@ submission = pd.DataFrame({
     "Exited": test_probabilities})
 submission.to_csv("submission_HistGB.csv", index=False)
 
-print(submission.shape)
+#print(submission.shape)
 print(submission.head(), "\n")
