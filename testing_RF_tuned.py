@@ -4,10 +4,10 @@ import pandas as pd
 import numpy as np
 
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import StratifiedKFold
-# from sklearn.model_selection import KFold  # old version
+from sklearn.model_selection import KFold
 from sklearn.metrics import log_loss
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.calibration import CalibratedClassifierCV
 
 
 # DATA IMPORT
@@ -118,56 +118,61 @@ if use_original:
 
 
 # MODEL
-def create_model(n_trees, n_leaves):
-    return HistGradientBoostingClassifier(
-        learning_rate=0.05,
-        max_iter=n_trees,
-        max_leaf_nodes=n_leaves,
-        # Off, otherwise it turns on automatically with more than 10000 rows (Kaggle + original data)
-        early_stopping=False,
+def create_model(min_leaf, max_feat, calibrate):
+    rf = RandomForestClassifier(
+        n_estimators=500,
+        # Minimum rows per leaf: bigger value = smoother probabilities, less overfitting
+        min_samples_leaf=min_leaf,
+        # Share of features tried at each split
+        max_features=max_feat,
+        n_jobs=-1,
         random_state=10)
+
+    # Isotonic calibration: corrects the RF probabilities with an internal 5-fold split
+    if calibrate:
+        return CalibratedClassifierCV(rf, method="isotonic", cv=5)
+    return rf
 
 
 # K FOLD VALIDATION
 k = 5
 
-# Old version: KFold without stratification
-# kf = KFold(
-#     n_splits=k,
-#     shuffle=True,
-#     random_state=10)
-
-# StratifiedKFold: every fold has the same exit rate as the whole train set
-kf = StratifiedKFold(
+kf = KFold(
     n_splits=k,
     shuffle=True,
     random_state=10)
 
-# TUNING STEP 2: size of each tree (max_leaf_nodes) together with number of trees (max_iter)
-# Smaller trees learn less per tree, so they usually need more trees
-leaf_values = [4, 8, 16, 31]
-tree_values = [50, 75, 100, 150, 200, 300, 400, 500]
+
+def get_fold_data(train_indices, validate_indices):
+    X_train = X.iloc[train_indices, :]
+    X_validate = X.iloc[validate_indices, :]
+
+    y_train = y.iloc[train_indices]
+    y_validate = y.iloc[validate_indices]
+
+    # Original data is only added to training, validation stays Kaggle data only
+    if use_original:
+        X_train = pd.concat([X_train, X_original])
+        y_train = pd.concat([y_train, y_original])
+
+    return X_train, X_validate, y_train, y_validate
+
+
+# TUNING: leaf size (min_samples_leaf) together with features per split (max_features)
+# Grid without calibration first, because it is faster
+leaf_values = [5, 10, 15, 25]
+feature_values = [0.2, 0.3, 0.5, "sqrt"]
 
 results = {}
 
-for n_leaves in leaf_values:
-    for n_trees in tree_values:
+for min_leaf in leaf_values:
+    for max_feat in feature_values:
         scores = []
 
-        # for train_indices, validate_indices in kf.split(X):  # old version (KFold)
-        for train_indices, validate_indices in kf.split(X, y):
-            X_train = X.iloc[train_indices, :]
-            X_validate = X.iloc[validate_indices, :]
+        for train_indices, validate_indices in kf.split(X):
+            X_train, X_validate, y_train, y_validate = get_fold_data(train_indices, validate_indices)
 
-            y_train = y.iloc[train_indices]
-            y_validate = y.iloc[validate_indices]
-
-            # Original data is only added to training, validation stays Kaggle data only
-            if use_original:
-                X_train = pd.concat([X_train, X_original])
-                y_train = pd.concat([y_train, y_original])
-
-            model = create_model(n_trees, n_leaves)
+            model = create_model(min_leaf, max_feat, calibrate=False)
             model.fit(X_train, y_train)
 
             probabilities = model.predict_proba(X_validate)[:, 1]
@@ -176,21 +181,38 @@ for n_leaves in leaf_values:
 
             scores.append(score)
 
-        results[(n_trees, n_leaves)] = np.mean(scores)
+        results[(min_leaf, max_feat)] = np.mean(scores)
 
-        print("max_leaf_nodes =", n_leaves, " max_iter =", n_trees, " Average log loss:", round(np.mean(scores), 4))
+        print("min_samples_leaf =", min_leaf, " max_features =", max_feat, " Average log loss:", round(np.mean(scores), 4))
 
-best_n_trees, best_n_leaves = min(results, key=results.get)
+best_min_leaf, best_max_feat = min(results, key=results.get)
 
-print("\nBest max_leaf_nodes:", best_n_leaves, " Best max_iter:", best_n_trees,
-      " Average log loss:", round(results[(best_n_trees, best_n_leaves)], 4), "\n")
+print("\nBest min_samples_leaf:", best_min_leaf, " Best max_features:", best_max_feat,
+      " Average log loss:", round(results[(best_min_leaf, best_max_feat)], 4), "\n")
+
+
+# CALIBRATED RF: best combination with isotonic calibration (same folds)
+scores = []
+
+for train_indices, validate_indices in kf.split(X):
+    X_train, X_validate, y_train, y_validate = get_fold_data(train_indices, validate_indices)
+
+    model = create_model(best_min_leaf, best_max_feat, calibrate=True)
+    model.fit(X_train, y_train)
+
+    probabilities = model.predict_proba(X_validate)[:, 1]
+
+    score = log_loss(y_validate, probabilities)
+
+    scores.append(score)
+
+print("RF calibrated  Average log loss:", round(np.mean(scores), 4), "\n")
 
 
 # FINAL MODEL SUBMISSION
-final_model = create_model(best_n_trees, best_n_leaves)
+final_model = create_model(best_min_leaf, best_max_feat, calibrate=True)
 
-# In case we don`t have the Churn_Modelling.csv file, we only use the Kaggle data for training`
-#But we should have them to use according to the instructions 
+# In case we don`t have the Churn_Modelling.csv file, we only use the Kaggle data for training
 if use_original:
     final_model.fit(pd.concat([X, X_original]), pd.concat([y, y_original]))
 else:
@@ -198,8 +220,8 @@ else:
 
 test_probabilities = final_model.predict_proba(X_test)[:, 1]
 
-# Round to 4 decimals 
-#test_probabilities = np.round(test_probabilities, 4)
+# Round to 4 decimals
+test_probabilities = np.round(test_probabilities, 4)
 
 # No prediction should be exactly 0 or 1 (a wrong prediction would give log(0), which is undefined)
 test_probabilities[test_probabilities < 0.0001] = 0.0001
@@ -208,7 +230,6 @@ test_probabilities[test_probabilities > 0.9999] = 0.9999
 submission = pd.DataFrame({
     "CustomerID": testset["CustomerID"],
     "Exited": test_probabilities})
-submission.to_csv("submission_HistGB.csv", index=False)
+submission.to_csv("submission_RF.csv", index=False)
 
-#print(submission.shape)
 print(submission.head(), "\n")
