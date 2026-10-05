@@ -8,6 +8,14 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.metrics import log_loss
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+
+# ENSEMBLE: weighted average of Random Forest and Logistic Regression probabilities
+#   final probability = w * RF + (1 - w) * LogReg
+# Both models are trained on the same folds, the weight w is chosen on the out-of-fold predictions
 
 
 # DATA IMPORT
@@ -26,7 +34,7 @@ else:
     print("Churn_Modelling.csv not found, only Kaggle data is used\n")
 
 
-# DATA CLEANING
+# DATA CLEANING (same as testing_RF_tuned.py)
 numerical_columns = [
     "CreditScore",
     "Age",
@@ -34,7 +42,7 @@ numerical_columns = [
     "Balance",
     "EstimatedSalary"]
 
-# NumOfProducts is imputed with the most frequent value, so it stays a whole number (mean would give e.g. 1.5)
+# NumOfProducts is imputed with the most frequent value, so it stays a whole number
 categorical_columns = [
     "Geography",
     "Gender",
@@ -43,7 +51,6 @@ categorical_columns = [
     "NumOfProducts"]
 
 # Missing flags: 1 = value was missing before imputation (set before imputing!)
-# Only for the important columns, flags for all 10 columns gave the same CV score
 missing_flag_columns = [
     "Age",
     "NumOfProducts",
@@ -144,27 +151,34 @@ if use_original:
     y_original = original["Exited"]
 
 
-# MODEL
-def create_model(min_leaf, max_feat, calibration=None, trees=500):
+# MODELS
+def create_rf():
+    # Best setting from testing_RF_tuned.py (calibrated tuning, 5x3 repeated CV)
     rf = RandomForestClassifier(
-        n_estimators=trees,
-        # Minimum rows per leaf: bigger value = smoother probabilities, less overfitting
-        min_samples_leaf=min_leaf,
-        # Share of features tried at each split
-        max_features=max_feat,
+        n_estimators=500,
+        min_samples_leaf=5,
+        max_features=0.2,
         n_jobs=-1,
         random_state=10)
 
-    # Calibration corrects the RF probabilities with an internal 5-fold split
-    # "isotonic" = flexible step function, "sigmoid" = smooth S-curve (less overfitting with few rows)
-    if calibration is not None:
-        return CalibratedClassifierCV(rf, method=calibration, cv=5)
-    return rf
+    # Isotonic calibration was better than sigmoid for every combination
+    return CalibratedClassifierCV(rf, method="isotonic", cv=5)
+
+
+def create_logreg():
+    # Scaling is needed for logistic regression
+    return make_pipeline(
+        StandardScaler(),
+        LogisticRegression(max_iter=1000))
+
+
+models = {
+    "RF": create_rf,
+    "LogReg": create_logreg}
 
 
 # REPEATED K FOLD VALIDATION
-# 5 folds x 3 repeats: single 5-fold scores vary a lot, averaging 15 folds makes the comparison more reliable
-# Stratified: every fold has the same share of churners
+# 5 folds x 3 repeats, stratified: same folds as testing_RF_tuned.py
 k = 5
 repeats = 3
 
@@ -189,55 +203,81 @@ def get_fold_data(train_indices, validate_indices):
     return X_train, X_validate, y_train, y_validate
 
 
-# TUNING: leaf size, features per split and calibration method together
-# Tuned WITH calibration, because the best uncalibrated combination is not always the best calibrated one
-# (calibration fixes overconfident probabilities, so smaller leaves can work better)
-# 300 trees during tuning to save time, the final model uses 500
-leaf_values = [3, 5, 10, 20]
-feature_values = [0.2, 0.3, 0.5]
-calibration_values = ["isotonic", "sigmoid"]
+# OUT-OF-FOLD PREDICTIONS
+# For every fold we keep the true labels and the predictions of both models,
+# so different weights can be tested later without training again
+fold_results = []
+
+for fold, (train_indices, validate_indices) in enumerate(kf.split(X, y), start=1):
+    X_train, X_validate, y_train, y_validate = get_fold_data(train_indices, validate_indices)
+
+    fold_predictions = {"y": y_validate.values}
+
+    for name, create_model in models.items():
+        model = create_model()
+        model.fit(X_train, y_train)
+
+        fold_predictions[name] = model.predict_proba(X_validate)[:, 1]
+
+    fold_results.append(fold_predictions)
+
+    print("Fold", fold, "of", k * repeats, "done", flush=True)
+
+
+def blend(rf_probabilities, logreg_probabilities, w):
+    return w * rf_probabilities + (1 - w) * logreg_probabilities
+
+
+def average_log_loss(w):
+    scores = []
+
+    for fold_predictions in fold_results:
+        probabilities = blend(fold_predictions["RF"], fold_predictions["LogReg"], w)
+        scores.append(log_loss(fold_predictions["y"], probabilities))
+
+    return np.mean(scores)
+
+
+# SINGLE MODELS (w = 1 is RF only, w = 0 is LogReg only)
+print("\nRF alone      Average log loss:", round(average_log_loss(1.0), 4))
+print("LogReg alone  Average log loss:", round(average_log_loss(0.0), 4), "\n")
+
+
+# WEIGHT SEARCH: share of RF in the ensemble
+weight_values = np.round(np.arange(0, 1.01, 0.05), 2)
 
 results = {}
 
-for calibration in calibration_values:
-    for min_leaf in leaf_values:
-        for max_feat in feature_values:
-            scores = []
+for w in weight_values:
+    results[w] = average_log_loss(w)
 
-            for train_indices, validate_indices in kf.split(X, y):
-                X_train, X_validate, y_train, y_validate = get_fold_data(train_indices, validate_indices)
+    print("w_RF =", w, " w_LogReg =", round(1 - w, 2), " Average log loss:", round(results[w], 4))
 
-                model = create_model(min_leaf, max_feat, calibration, trees=300)
-                model.fit(X_train, y_train)
+best_w = min(results, key=results.get)
 
-                probabilities = model.predict_proba(X_validate)[:, 1]
-
-                score = log_loss(y_validate, probabilities)
-
-                scores.append(score)
-
-            results[(min_leaf, max_feat, calibration)] = np.mean(scores)
-
-            print("calibration =", calibration, " min_samples_leaf =", min_leaf, " max_features =", max_feat,
-                  " Average log loss:", round(np.mean(scores), 4), flush=True)
-
-best_min_leaf, best_max_feat, best_calibration = min(results, key=results.get)
-
-print("\nBest calibration:", best_calibration, " Best min_samples_leaf:", best_min_leaf,
-      " Best max_features:", best_max_feat,
-      " Average log loss:", round(results[(best_min_leaf, best_max_feat, best_calibration)], 4), "\n")
+print("\nBest w_RF:", best_w, " Best w_LogReg:", round(1 - best_w, 2),
+      " Average log loss:", round(results[best_w], 4))
+print("Improvement over RF alone:", round(average_log_loss(1.0) - results[best_w], 4), "\n")
 
 
 # FINAL MODEL SUBMISSION
-final_model = create_model(best_min_leaf, best_max_feat, best_calibration)
-
-# In case we don`t have the Churn_Modelling.csv file, we only use the Kaggle data for training
+# Both models are trained on all data, then blended with the best weight
 if use_original:
-    final_model.fit(pd.concat([X, X_original]), pd.concat([y, y_original]))
+    X_full = pd.concat([X, X_original])
+    y_full = pd.concat([y, y_original])
 else:
-    final_model.fit(X, y)
+    X_full = X
+    y_full = y
 
-test_probabilities = final_model.predict_proba(X_test)[:, 1]
+test_predictions = {}
+
+for name, create_model in models.items():
+    final_model = create_model()
+    final_model.fit(X_full, y_full)
+
+    test_predictions[name] = final_model.predict_proba(X_test)[:, 1]
+
+test_probabilities = blend(test_predictions["RF"], test_predictions["LogReg"], best_w)
 
 # Round to 4 decimals
 test_probabilities = np.round(test_probabilities, 4)
@@ -249,6 +289,6 @@ test_probabilities[test_probabilities > 0.9999] = 0.9999
 submission = pd.DataFrame({
     "CustomerID": testset["CustomerID"],
     "Exited": test_probabilities})
-submission.to_csv("submission_RF_Leo.csv", index=False)
+submission.to_csv("submission_Ensemble.csv", index=False)
 
 print(submission.head(), "\n")
