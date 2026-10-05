@@ -221,7 +221,7 @@ else:
 test_probabilities = final_model.predict_proba(X_test)[:, 1]
 
 # Round to 4 decimals
-test_probabilities = np.round(test_probabilities, 4)
+#test_probabilities = np.round(test_probabilities, 4)
 
 # No prediction should be exactly 0 or 1 (a wrong prediction would give log(0), which is undefined)
 test_probabilities[test_probabilities < 0.0001] = 0.0001
@@ -230,6 +230,6 @@ test_probabilities[test_probabilities > 0.9999] = 0.9999
 submission = pd.DataFrame({
     "CustomerID": testset["CustomerID"],
     "Exited": test_probabilities})
-submission.to_csv("submission_RF.csv", index=False)
+submission.to_csv("submission_RF_Leo.csv", index=False)
 
 print(submission.head(), "\n")
