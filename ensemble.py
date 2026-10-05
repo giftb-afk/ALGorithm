@@ -149,6 +149,10 @@ X_test = testset[features]
 if use_original:
     X_original = original[features]
     y_original = original["Exited"]
+else:
+    # Empty, so pd.concat below works the same without original data
+    X_original = X.iloc[:0]
+    y_original = y.iloc[:0]
 
 
 # MODELS
@@ -172,119 +176,66 @@ def create_logreg():
         LogisticRegression(max_iter=1000))
 
 
-models = {
-    "RF": create_rf,
-    "LogReg": create_logreg}
-
-
 # REPEATED K FOLD VALIDATION
 # 5 folds x 3 repeats, stratified: same folds as testing_RF_tuned.py
-k = 5
-repeats = 3
-
 kf = RepeatedStratifiedKFold(
-    n_splits=k,
-    n_repeats=repeats,
+    n_splits=5,
+    n_repeats=3,
     random_state=10)
 
-
-def get_fold_data(train_indices, validate_indices):
-    X_train = X.iloc[train_indices, :]
-    X_validate = X.iloc[validate_indices, :]
-
-    y_train = y.iloc[train_indices]
-    y_validate = y.iloc[validate_indices]
-
-    # Original data is only added to training, validation stays Kaggle data only
-    if use_original:
-        X_train = pd.concat([X_train, X_original])
-        y_train = pd.concat([y_train, y_original])
-
-    return X_train, X_validate, y_train, y_validate
-
-
-# OUT-OF-FOLD PREDICTIONS
 # For every fold we keep the true labels and the predictions of both models,
 # so different weights can be tested later without training again
 fold_results = []
 
-for fold, (train_indices, validate_indices) in enumerate(kf.split(X, y), start=1):
-    X_train, X_validate, y_train, y_validate = get_fold_data(train_indices, validate_indices)
+for train_indices, validate_indices in kf.split(X, y):
+    # Original data is only added to training, validation stays Kaggle data only
+    X_train = pd.concat([X.iloc[train_indices], X_original])
+    y_train = pd.concat([y.iloc[train_indices], y_original])
+    X_validate = X.iloc[validate_indices]
 
-    fold_predictions = {"y": y_validate.values}
+    rf = create_rf().fit(X_train, y_train)
+    logreg = create_logreg().fit(X_train, y_train)
 
-    for name, create_model in models.items():
-        model = create_model()
-        model.fit(X_train, y_train)
-
-        fold_predictions[name] = model.predict_proba(X_validate)[:, 1]
-
-    fold_results.append(fold_predictions)
-
-    print("Fold", fold, "of", k * repeats, "done", flush=True)
-
-
-def blend(rf_probabilities, logreg_probabilities, w):
-    return w * rf_probabilities + (1 - w) * logreg_probabilities
+    fold_results.append((
+        y.iloc[validate_indices],
+        rf.predict_proba(X_validate)[:, 1],
+        logreg.predict_proba(X_validate)[:, 1]))
 
 
-def average_log_loss(w):
-    scores = []
-
-    for fold_predictions in fold_results:
-        probabilities = blend(fold_predictions["RF"], fold_predictions["LogReg"], w)
-        scores.append(log_loss(fold_predictions["y"], probabilities))
-
-    return np.mean(scores)
-
-
-# SINGLE MODELS (w = 1 is RF only, w = 0 is LogReg only)
-print("\nRF alone      Average log loss:", round(average_log_loss(1.0), 4))
-print("LogReg alone  Average log loss:", round(average_log_loss(0.0), 4), "\n")
-
-
-# WEIGHT SEARCH: share of RF in the ensemble
-weight_values = np.round(np.arange(0, 1.01, 0.05), 2)
-
+# WEIGHT SEARCH: w = share of RF (w = 1 is RF only, w = 0 is LogReg only)
 results = {}
 
-for w in weight_values:
-    results[w] = average_log_loss(w)
+for w in np.round(np.arange(0, 1.01, 0.05), 2):
+    scores = []
+
+    for y_validate, rf_probabilities, logreg_probabilities in fold_results:
+        probabilities = w * rf_probabilities + (1 - w) * logreg_probabilities
+        scores.append(log_loss(y_validate, probabilities))
+
+    results[w] = np.mean(scores)
 
     print("w_RF =", w, " w_LogReg =", round(1 - w, 2), " Average log loss:", round(results[w], 4))
 
 best_w = min(results, key=results.get)
 
-print("\nBest w_RF:", best_w, " Best w_LogReg:", round(1 - best_w, 2),
-      " Average log loss:", round(results[best_w], 4))
-print("Improvement over RF alone:", round(average_log_loss(1.0) - results[best_w], 4), "\n")
+print("\nRF alone      Average log loss:", round(results[1.0], 4))
+print("LogReg alone  Average log loss:", round(results[0.0], 4))
+print("Best w_RF:", best_w, " Best w_LogReg:", round(1 - best_w, 2),
+      " Average log loss:", round(results[best_w], 4), "\n")
 
 
 # FINAL MODEL SUBMISSION
 # Both models are trained on all data, then blended with the best weight
-if use_original:
-    X_full = pd.concat([X, X_original])
-    y_full = pd.concat([y, y_original])
-else:
-    X_full = X
-    y_full = y
+X_full = pd.concat([X, X_original])
+y_full = pd.concat([y, y_original])
 
-test_predictions = {}
+rf = create_rf().fit(X_full, y_full)
+logreg = create_logreg().fit(X_full, y_full)
 
-for name, create_model in models.items():
-    final_model = create_model()
-    final_model.fit(X_full, y_full)
+test_probabilities = best_w * rf.predict_proba(X_test)[:, 1] + (1 - best_w) * logreg.predict_proba(X_test)[:, 1]
 
-    test_predictions[name] = final_model.predict_proba(X_test)[:, 1]
-
-test_probabilities = blend(test_predictions["RF"], test_predictions["LogReg"], best_w)
-
-# Round to 4 decimals
-test_probabilities = np.round(test_probabilities, 4)
-
-# No prediction should be exactly 0 or 1 (a wrong prediction would give log(0), which is undefined)
-test_probabilities[test_probabilities < 0.0001] = 0.0001
-test_probabilities[test_probabilities > 0.9999] = 0.9999
+# Clipping probabilities to avoid log(0) errors in log loss calculation
+test_probabilities = np.clip(test_probabilities, 0.0001, 0.9999)
 
 submission = pd.DataFrame({
     "CustomerID": testset["CustomerID"],
