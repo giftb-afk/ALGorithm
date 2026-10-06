@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Created on Tue Oct  6 12:22:23 2026
+
+@author: anastasiyahenechka
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
 Created on Sun Oct  4 16:18:51 2026
 
 @author: anastasiyahenechka
@@ -165,8 +173,8 @@ for train_indices, validate_indices in kf.split(X):
     y_train = pd.concat([y_train, y_original])
 
 
-    model = RandomForestClassifier(n_estimators=470,random_state=10,  
-                                   max_depth= 10, max_features= 'sqrt')
+    model = RandomForestClassifier(n_estimators=500,random_state=10,  
+                                   max_depth= 13, max_features= 'sqrt')
 
     model.fit(X_train, y_train)
 
@@ -179,8 +187,8 @@ for train_indices, validate_indices in kf.split(X):
 print("Log loss per fold:", scores)
 print("Average log loss:", np.mean(scores))
 
-final_model = RandomForestClassifier(n_estimators=470, random_state=10,  
-                                     max_depth = 10 , max_features='sqrt')
+final_model = RandomForestClassifier(n_estimators=500, random_state=10,  
+                                     max_depth = 13 , max_features='sqrt')
 
 
 final_model.fit(pd.concat([X, X_original]), pd.concat([y, y_original]))
@@ -217,12 +225,12 @@ repeated out-of-sample evaluation while keeping computational cost manageable.
 We tested Random Forest, bagging and SVC. SVC was standardized and tested with
 different C values and kernels, but performed worse, as did bagging. We also
 tested HistGradientBoostingClassifier, but its improvement was too small to
-justify the additional complexity and computational cost. We therefore selected
+justify the additional complexity and computational cost. We, therefore, selected
 Random Forest as the best trade-off between performance and complexity.
 
 Missing numerical values were imputed with their training-set means and
 categorical/binary values with their most frequent values using SimpleImputer.
-IterativeImputer was also tested but did not provide sufficient improvement.
+IterativeImputer was also tested, but did not provide sufficient improvement.
 Gender and Geography were converted to numerical indicators. Engineered
 features were tested individually using CV: ZeroBalance and OneProduct were
 discarded, while ManyProducts and AgeXInactive improved performance and were
@@ -242,6 +250,5 @@ improved log loss by only about 0.002, which did not justify the additional
 complexity. We therefore retained Random Forest and based our decisions
 primarily on CV rather than the public leaderboard.
 """
-
 
 
