@@ -6,10 +6,10 @@ Created on Sun Oct  4 16:18:51 2026
 @author: anastasiyahenechka
 
 """
-""" By Anastasiya Henechka, Leo Elias Ehrenlechler, Gift Bichetero"""
+""" By Anastasiya Henechka, Leo Elias Ehrenlechner, Gift Bichetero"""
 
-#WARNING! - There is no check that og_bank_train.csv exists. If the 
-#file is missing, line 21 raises a FileNotFoundError and the script stops.
+#WARNING! og_bank_train.csv (the permitted external bank-churn data) must be in
+# the same folder as this script, otherwise pd.read_csv raises a FileNotFoundError.
 import pandas as pd
 import numpy as np
 
@@ -44,8 +44,11 @@ categorical_columns = [
 #Cleaning the dataset by filling in the missing values - mean for numerical 
 #values, mode for categorical 
 
-#Using transform for train, and fir transform on test to avoid data leakage, 
-#the fit takes alreay existing values  
+#The imputers are fit on the training set only and then applied to the test
+# set, so no information from the test data leaks into the cleaning step.
+# Note: they are fit once on the full training set before cross-validation,
+# so the validation folds contribute slightly to the means/modes. With only a
+# few missing values the effect on the CV score is negligible.
 
 mean_imputer = SimpleImputer(strategy="mean")
 
@@ -113,8 +116,7 @@ for df in datasets:
 
 # In the training data the churn rate is 35 % for one product, 
 # 6 % for two, 90 % for three and 87 % for four.
-# Wanna involve it as a separate feature so that it doesn't get overlooked 
-# by the tree
+# We add it as a separate feature so that it doesn't get overlooked by the trees.
 
     df["ManyProducts"] = (df["NumOfProducts"] >= 3).astype(int)
 
@@ -195,7 +197,7 @@ print(importance)
 X_test = testset[features]
 test_probabilities = final_model.predict_proba(X_test)[:, 1]
 
-
+# No prediction should be exactly 0 or 1 (a wrong prediction would give log(0), which is undefined)
 test_probabilities[test_probabilities < 0.0001] = 0.0001
 test_probabilities[test_probabilities > 0.9999] = 0.9999
 
